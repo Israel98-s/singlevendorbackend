@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Payment Confirmation</title>
+</head>
+<body>
+    <h2>Payment Confirmation</h2>
+    <p>Dear {{ user.first_name }},</p>
+    <p>Your payment has been successfully processed. Below are the details:</p>
+    <p><strong>Order ID:</strong> {{ order.id }}</p>
+    <p><strong>Payment Reference:</strong> {{ payment.reference }}</p>
+    <p><strong>Amount:</strong> ${{ payment.amount }}</p>
+    <p><strong>Method:</strong> {{ payment.method }}</p>
+    <p><strong>Status:</strong> {{ payment.status }}</p>
+    
+    <p>Thank you for your purchase!</p>
+</body>
+</html>
