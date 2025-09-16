@@ -1,0 +1,32 @@
+#header {
+    background-color: #2c3e50; /* Dark blue */
+    color: #ffffff; /* White text */
+}
+.button, input[type=submit], input[type=button], .submit-row input {
+    background-color: #3498db; /* Blue */
+    border-color: #2980b9;
+    color: #ffffff;
+}
+.button:hover, input[type=submit]:hover, input[type=button]:hover {
+    background-color: #2980b9; /* Darker blue on hover */
+}
+#nav-sidebar {
+    background-color: #ecf0f1; /* Light gray */
+}
+th {
+    background-color: #3498db; /* Blue */
+    color: #ffffff;
+}
+a:link, a:visited {
+    color: #2980b9; /* Blue */
+}
+a:hover {
+    color: #1abc9c; /* Teal on hover */
+}
+body {
+    background-color: #f8f9fa; /* Light gray */
+}
+.module {
+    background-color: #ffffff; /* White */
+    border: 1px solid #e0e0e0;
+}

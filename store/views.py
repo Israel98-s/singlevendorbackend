@@ -11,7 +11,7 @@ import uuid
 import requests
 import stripe
 from django_filters.rest_framework import DjangoFilterBackend
-from .models import Category, Product, Cart, CartItem, Order, OrderItem, Payment, Wishlist, Review, Shipping
+from .models import Category, Product, Cart, CartItem, Order, OrderItem, Payment, Wishlist, Review, Shipping, StoreSettings
 from .serializers import *
 from .permissions import IsVendorOrAdmin
 from .utils import send_order_confirmation_email, send_payment_confirmation_email
@@ -19,17 +19,16 @@ from .utils import send_order_confirmation_email, send_payment_confirmation_emai
 User = get_user_model()
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
-# Authentication Views
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def register(request):
-    serializer = UserRegistrationSerializer(data=request.data)
+    serializer = RegisterSerializer(data=request.data)
     if serializer.is_valid():
         user = serializer.save()
         Cart.objects.create(user=user)
+        StoreSettings.objects.create(user=user, store_name=f"{user.username}'s Store")
         refresh = RefreshToken.for_user(user)
         return Response({
-            'user': UserProfileSerializer(user).data,
             'refresh': str(refresh),
             'access': str(refresh.access_token),
         }, status=status.HTTP_201_CREATED)
@@ -38,26 +37,26 @@ def register(request):
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def login(request):
-    serializer = UserLoginSerializer(data=request.data)
+    serializer = LoginSerializer(data=request.data)
     if serializer.is_valid():
         user = serializer.validated_data['user']
         refresh = RefreshToken.for_user(user)
         return Response({
-            'user': UserProfileSerializer(user).data,
             'refresh': str(refresh),
             'access': str(refresh.access_token),
         })
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
 def logout(request):
     try:
-        refresh_token = request.data["refresh_token"]
+        refresh_token = request.data['refresh']
         token = RefreshToken(refresh_token)
         token.blacklist()
-        return Response({"message": "Logout successful"}, status=status.HTTP_200_OK)
+        return Response(status=status.HTTP_205_RESET_CONTENT)
     except Exception as e:
-        return Response({"error": "Invalid token"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
@@ -68,68 +67,77 @@ def forgot_password(request):
         reset_token = str(uuid.uuid4())
         user.reset_token = reset_token
         user.save()
-        
         send_mail(
-            'Password Reset',
-            f'Your reset token: {reset_token}',
-            settings.EMAIL_HOST_USER,
+            'Password Reset Request',
+            f'Use this token to reset your password: {reset_token}',
+            settings.DEFAULT_FROM_EMAIL,
             [email],
             fail_silently=False,
         )
-        return Response({"message": "Reset email sent"})
+        return Response({'message': 'Password reset email sent'}, status=status.HTTP_200_OK)
     except User.DoesNotExist:
-        return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'error': 'Email not found'}, status=status.HTTP_404_NOT_FOUND)
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def reset_password(request):
-    token = request.data.get('token')
+    reset_token = request.data.get('reset_token')
     new_password = request.data.get('new_password')
-    
     try:
-        user = User.objects.get(reset_token=token)
+        user = User.objects.get(reset_token=reset_token)
         user.set_password(new_password)
-        user.reset_token = ''
+        user.reset_token = None
         user.save()
-        return Response({"message": "Password reset successful"})
+        return Response({'message': 'Password reset successful'}, status=status.HTTP_200_OK)
     except User.DoesNotExist:
-        return Response({"error": "Invalid token"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'error': 'Invalid token'}, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET', 'PUT'])
+@permission_classes([permissions.IsAuthenticated])
 def profile(request):
     if request.method == 'GET':
-        serializer = UserProfileSerializer(request.user)
+        serializer = UserSerializer(request.user)
         return Response(serializer.data)
-    
     elif request.method == 'PUT':
-        serializer = UserProfileSerializer(request.user, data=request.data, partial=True)
+        serializer = UserSerializer(request.user, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-# Product Views
+@api_view(['GET', 'PUT'])
+@permission_classes([permissions.IsAuthenticated])
+def store_settings(request):
+    if request.method == 'GET':
+        store_settings, created = StoreSettings.objects.get_or_create(user=request.user, defaults={'store_name': 'My Store'})
+        serializer = StoreSettingsSerializer(store_settings)
+        return Response(serializer.data)
+    elif request.method == 'PUT':
+        store_settings, created = StoreSettings.objects.get_or_create(user=request.user, defaults={'store_name': 'My Store'})
+        serializer = StoreSettingsSerializer(store_settings, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 class ProductListCreateView(generics.ListCreateAPIView):
     queryset = Product.objects.filter(is_active=True)
     serializer_class = ProductSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['category', 'price']
+    filterset_fields = ['category', 'price', 'stock']
     search_fields = ['name', 'description']
     ordering_fields = ['price', 'created_at']
 
     def perform_create(self, serializer):
+        if not self.request.user.is_vendor and not self.request.user.is_superuser:
+            raise permissions.PermissionDenied("Only vendors or admins can create products")
         serializer.save()
 
 class ProductRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
-
-    def perform_destroy(self, instance):
-        if instance.image:
-            instance.image.delete()
-        instance.delete()
+    permission_classes = [IsVendorOrAdmin]
 
 @api_view(['POST'])
 @permission_classes([IsVendorOrAdmin])
@@ -139,188 +147,159 @@ def delete_product_image(request, pk):
         product.image.delete()
         product.image = None
         product.save()
-        return Response({"message": "Product image deleted"})
-    return Response({"error": "No image to delete"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'message': 'Product image deleted'}, status=status.HTTP_200_OK)
+    return Response({'error': 'No image to delete'}, status=status.HTTP_400_BAD_REQUEST)
 
 class CategoryListCreateView(generics.ListCreateAPIView):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['name']
 
-# Cart Views
+    def perform_create(self, serializer):
+        if not self.request.user.is_vendor and not self.request.user.is_superuser:
+            raise permissions.PermissionDenied("Only vendors or admins can create categories")
+        serializer.save()
+
 @api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
 def get_cart(request):
-    cart, created = Cart.objects.get_or_create(user=request.user)
+    cart = get_object_or_404(Cart, user=request.user)
     serializer = CartSerializer(cart)
     return Response(serializer.data)
 
 @api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
 def add_to_cart(request):
     product_id = request.data.get('product_id')
-    quantity = request.data.get('quantity', 1)
-    
-    try:
-        product = Product.objects.get(id=product_id, is_active=True)
-        cart, created = Cart.objects.get_or_create(user=request.user)
-        
-        cart_item, created = CartItem.objects.get_or_create(
-            cart=cart, product=product,
-            defaults={'quantity': quantity}
-        )
-        
-        if not created:
-            cart_item.quantity += quantity
-            cart_item.save()
-        
-        return Response({"message": "Item added to cart"}, status=status.HTTP_201_CREATED)
-    
-    except Product.DoesNotExist:
-        return Response({"error": "Product not found"}, status=status.HTTP_404_NOT_FOUND)
+    quantity = int(request.data.get('quantity', 1))
+    product = get_object_or_404(Product, id=product_id, is_active=True)
+    cart, created = Cart.objects.get_or_create(user=request.user)
+    cart_item, created = CartItem.objects.get_or_create(cart=cart, product=product)
+    if not created:
+        cart_item.quantity += quantity
+    else:
+        cart_item.quantity = quantity
+    cart_item.save()
+    serializer = CartSerializer(cart)
+    return Response(serializer.data)
 
 @api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
 def remove_from_cart(request):
     product_id = request.data.get('product_id')
-    
-    try:
-        cart = Cart.objects.get(user=request.user)
-        cart_item = CartItem.objects.get(cart=cart, product_id=product_id)
-        cart_item.delete()
-        return Response({"message": "Item removed from cart"})
-    except (Cart.DoesNotExist, CartItem.DoesNotExist):
-        return Response({"error": "Item not found"}, status=status.HTTP_404_NOT_FOUND)
+    cart = get_object_or_404(Cart, user=request.user)
+    cart_item = get_object_or_404(CartItem, cart=cart, product_id=product_id)
+    cart_item.delete()
+    serializer = CartSerializer(cart)
+    return Response(serializer.data)
 
 @api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
 def clear_cart(request):
-    try:
-        cart = Cart.objects.get(user=request.user)
-        cart.items.all().delete()
-        return Response({"message": "Cart cleared"})
-    except Cart.DoesNotExist:
-        return Response({"error": "Cart not found"}, status=status.HTTP_404_NOT_FOUND)
+    cart = get_object_or_404(Cart, user=request.user)
+    cart.items.all().delete()
+    serializer = CartSerializer(cart)
+    return Response(serializer.data)
 
-# Wishlist Views
 @api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
 def get_wishlist(request):
     wishlist = Wishlist.objects.filter(user=request.user)
     serializer = WishlistSerializer(wishlist, many=True)
     return Response(serializer.data)
 
 @api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
 def add_to_wishlist(request):
     product_id = request.data.get('product_id')
-    try:
-        product = Product.objects.get(id=product_id, is_active=True)
-        wishlist_item, created = Wishlist.objects.get_or_create(user=request.user, product=product)
-        if created:
-            return Response({"message": "Product added to wishlist"}, status=status.HTTP_201_CREATED)
-        return Response({"message": "Product already in wishlist"})
-    except Product.DoesNotExist:
-        return Response({"error": "Product not found"}, status=status.HTTP_404_NOT_FOUND)
+    product = get_object_or_404(Product, id=product_id, is_active=True)
+    wishlist, created = Wishlist.objects.get_or_create(user=request.user, product=product)
+    if created:
+        serializer = WishlistSerializer(wishlist)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response({'message': 'Product already in wishlist'}, status=status.HTTP_200_OK)
 
 @api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
 def remove_from_wishlist(request):
     product_id = request.data.get('product_id')
-    try:
-        wishlist_item = Wishlist.objects.get(user=request.user, product_id=product_id)
-        wishlist_item.delete()
-        return Response({"message": "Product removed from wishlist"})
-    except Wishlist.DoesNotExist:
-        return Response({"error": "Product not in wishlist"}, status=status.HTTP_404_NOT_FOUND)
+    wishlist = get_object_or_404(Wishlist, user=request.user, product_id=product_id)
+    wishlist.delete()
+    return Response({'message': 'Product removed from wishlist'}, status=status.HTTP_200_OK)
 
-# Review Views
 class ReviewListCreateView(generics.ListCreateAPIView):
     queryset = Review.objects.all()
     serializer_class = ReviewSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
-    
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['product', 'rating']
+
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        product_id = self.request.data.get('product')
+        product = get_object_or_404(Product, id=product_id)
+        serializer.save(user=self.request.user, product=product)
 
 class ReviewRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Review.objects.all()
     serializer_class = ReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
-    
-    def get_queryset(self):
-        return Review.objects.filter(user=self.request.user)
 
-# Order Views
+    def perform_update(self, serializer):
+        if serializer.instance.user != self.request.user:
+            raise permissions.PermissionDenied("You can only edit your own reviews")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if instance.user != self.request.user:
+            raise permissions.PermissionDenied("You can only delete your own reviews")
+        instance.delete()
+
 @api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
 def list_orders(request):
-    orders = Order.objects.filter(user=request.user).order_by('-created_at')
+    orders = Order.objects.filter(user=request.user)
     serializer = OrderSerializer(orders, many=True)
     return Response(serializer.data)
 
 @api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
 def get_order(request, order_id):
     order = get_object_or_404(Order, id=order_id, user=request.user)
     serializer = OrderSerializer(order)
     return Response(serializer.data)
 
 @api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
 @transaction.atomic
 def create_order(request):
-    cart_data = request.data.get('cart', [])
-    address = request.data.get('address')
-    shipping_method = request.data.get('shipping_method', 'Standard Shipping')
+    cart = get_object_or_404(Cart, user=request.user)
+    if not cart.items.exists():
+        return Response({'error': 'Cart is empty'}, status=status.HTTP_400_BAD_REQUEST)
     
-    if not cart_data or not address:
-        return Response({"error": "Cart and address required"}, status=status.HTTP_400_BAD_REQUEST)
+    shipping_address = request.data.get('shipping_address')
+    if not shipping_address:
+        return Response({'error': 'Shipping address is required'}, status=status.HTTP_400_BAD_REQUEST)
     
-    total_amount = 0
-    order_items = []
-    
-    for item in cart_data:
-        try:
-            product = Product.objects.get(id=item['product_id'], is_active=True)
-            quantity = item['quantity']
-            
-            if product.stock < quantity:
-                return Response({"error": f"Insufficient stock for {product.name}"}, 
-                              status=status.HTTP_400_BAD_REQUEST)
-            
-            item_total = product.price * quantity
-            total_amount += item_total
-            
-            order_items.append({
-                'product': product,
-                'quantity': quantity,
-                'price': product.price
-            })
-        except Product.DoesNotExist:
-            return Response({"error": "Invalid product"}, status=status.HTTP_400_BAD_REQUEST)
-    
+    total_amount = sum(item.quantity * item.product.price for item in cart.items.all())
     order = Order.objects.create(
         user=request.user,
         total_amount=total_amount,
-        shipping_address=address
+        shipping_address=shipping_address,
+        status='pending'
     )
     
-    for item_data in order_items:
+    for item in cart.items.all():
         OrderItem.objects.create(
             order=order,
-            product=item_data['product'],
-            quantity=item_data['quantity'],
-            price=item_data['price']
+            product=item.product,
+            quantity=item.quantity,
+            price=item.product.price
         )
-        
-        product = item_data['product']
-        product.stock -= item_data['quantity']
-        product.save()
     
-    Shipping.objects.create(
-        order=order,
-        method=shipping_method,
-    )
-    
-    try:
-        cart = Cart.objects.get(user=request.user)
-        cart.items.all().delete()
-    except Cart.DoesNotExist:
-        pass
-    
-    send_order_confirmation_email(order)
-    
+    cart.items.all().delete()
+    send_order_confirmation_email(request.user, order)
     serializer = OrderSerializer(order)
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -328,168 +307,107 @@ def create_order(request):
 @permission_classes([IsVendorOrAdmin])
 def update_order_status(request, order_id):
     order = get_object_or_404(Order, id=order_id)
-    new_status = request.data.get('status')
-    
-    if new_status not in dict(Order.STATUS_CHOICES):
-        return Response({"error": "Invalid status"}, status=status.HTTP_400_BAD_REQUEST)
-    
-    order.status = new_status
+    status = request.data.get('status')
+    if status not in dict(Order._meta.get_field('status').choices).keys():
+        return Response({'error': 'Invalid status'}, status=status.HTTP_400_BAD_REQUEST)
+    order.status = status
     order.save()
-    
+    send_order_confirmation_email(order.user, order)
     serializer = OrderSerializer(order)
     return Response(serializer.data)
 
-# Shipping Views
 @api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
 def get_shipping(request, order_id):
-    shipping = get_object_or_404(Shipping, order_id=order_id, order__user=request.user)
+    shipping = get_object_or_404(Shipping, order__id=order_id, order__user=request.user)
     serializer = ShippingSerializer(shipping)
     return Response(serializer.data)
 
 @api_view(['PUT'])
 @permission_classes([IsVendorOrAdmin])
 def update_shipping(request, order_id):
-    shipping = get_object_or_404(Shipping, order_id=order_id)
+    shipping = get_object_or_404(Shipping, order__id=order_id)
     serializer = ShippingSerializer(shipping, data=request.data, partial=True)
     if serializer.is_valid():
         serializer.save()
         return Response(serializer.data)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-# Payment Views
 @api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
 def initiate_payment(request):
     order_id = request.data.get('order_id')
-    method = request.data.get('method')
+    payment_method = request.data.get('payment_method')
+    order = get_object_or_404(Order, id=order_id, user=request.user)
     
-    try:
-        order = Order.objects.get(id=order_id, user=request.user)
-        
-        reference = f"PAY_{uuid.uuid4().hex[:10].upper()}"
-        
-        payment = Payment.objects.create(
-            order=order,
-            method=method,
-            reference=reference,
-            amount=order.total_amount
-        )
-        
-        if method == 'paystack':
-            url = "https://api.paystack.co/transaction/initialize"
-            headers = {
-                "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
-                "Content-Type": "application/json"
-            }
-            data = {
-                "email": request.user.email,
-                "amount": int(order.total_amount * 100),
-                "reference": reference
-            }
-            
-            response = requests.post(url, json=data, headers=headers)
-            if response.status_code == 200:
-                response_data = response.json()
-                return Response({
-                    "reference": reference,
-                    "authorization_url": response_data['data']['authorization_url']
-                })
-        
-        elif method == 'stripe':
-            try:
-                session = stripe.checkout.Session.create(
-                    payment_method_types=['card'],
-                    line_items=[{
-                        'price_data': {
-                            'currency': 'usd',
-                            'product_data': {
-                                'name': f"Order {str(order.id)[:8]}",
-                            },
-                            'unit_amount': int(order.total_amount * 100),
-                        },
-                        'quantity': 1,
-                    }],
-                    mode='payment',
-                    success_url='http://localhost:3000/payment/success',
-                    cancel_url='http://localhost:3000/payment/cancel',
-                    metadata={'order_id': str(order.id), 'reference': reference}
-                )
-                return Response({
-                    "reference": reference,
-                    "session_id": session.id,
-                    "url": session.url
-                })
-            except stripe.error.StripeError as e:
-                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        
-        return Response({"reference": reference, "amount": order.total_amount})
-    
-    except Order.DoesNotExist:
-        return Response({"error": "Order not found"}, status=status.HTTP_404_NOT_FOUND)
+    if payment_method == 'stripe':
+        try:
+            intent = stripe.PaymentIntent.create(
+                amount=int(order.total_amount * 100),
+                currency='usd',
+                payment_method_types=['card'],
+                metadata={'order_id': str(order.id)},
+            )
+            payment = Payment.objects.create(
+                order=order,
+                method=payment_method,
+                amount=order.total_amount,
+                reference=intent['id'],
+                status='pending'
+            )
+            return Response({
+                'client_secret': intent['client_secret'],
+                'payment_id': payment.id
+            })
+        except stripe.error.StripeError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    else:
+        return Response({'error': 'Unsupported payment method'}, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
 def verify_payment(request):
-    reference = request.data.get('reference')
-    
-    try:
-        payment = Payment.objects.get(reference=reference)
-        
-        if payment.method == 'paystack':
-            url = f"https://api.paystack.co/transaction/verify/{reference}"
-            headers = {"Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}"}
-            
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                response_data = response.json()
-                if response_data['data']['status'] == 'success':
-                    payment.status = 'completed'
-                    payment.order.status = 'confirmed'
-                    payment.save()
-                    payment.order.save()
-                    send_payment_confirmation_email(payment)
-                    return Response({"message": "Payment verified successfully"})
-        
-        elif payment.method == 'stripe':
-            try:
-                session = stripe.checkout.Session.retrieve(payment.reference)
-                if session.payment_status == 'paid':
-                    payment.status = 'completed'
-                    payment.order.status = 'confirmed'
-                    payment.save()
-                    payment.order.save()
-                    send_payment_confirmation_email(payment)
-                    return Response({"message": "Payment verified successfully"})
-            except stripe.error.StripeError as e:
-                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        
-        return Response({"error": "Payment verification failed"}, status=status.HTTP_400_BAD_REQUEST)
-    
-    except Payment.DoesNotExist:
-        return Response({"error": "Payment not found"}, status=status.HTTP_404_NOT_FOUND)
+    payment_id = request.data.get('payment_id')
+    payment = get_object_or_404(Payment, id=payment_id, order__user=request.user)
+    if payment.method == 'stripe':
+        try:
+            intent = stripe.PaymentIntent.retrieve(payment.reference)
+            if intent.status == 'succeeded':
+                payment.status = 'completed'
+                payment.order.status = 'confirmed'
+                payment.order.save()
+                payment.save()
+                send_payment_confirmation_email(payment.order.user, payment)
+                return Response({'message': 'Payment verified'}, status=status.HTTP_200_OK)
+            return Response({'error': 'Payment not completed'}, status=status.HTTP_400_BAD_REQUEST)
+        except stripe.error.StripeError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({'error': 'Unsupported payment method'}, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
 def payment_history(request):
-    payments = Payment.objects.filter(order__user=request.user).order_by('-created_at')
+    payments = Payment.objects.filter(order__user=request.user)
     serializer = PaymentSerializer(payments, many=True)
     return Response(serializer.data)
 
-# Admin Views
 @api_view(['GET'])
 @permission_classes([IsVendorOrAdmin])
 def admin_dashboard(request):
     total_orders = Order.objects.count()
-    total_revenue = sum(order.total_amount for order in Order.objects.all())
+    total_products = Product.objects.count()
+    total_users = User.objects.count()
     pending_orders = Order.objects.filter(status='pending').count()
-    
     return Response({
-        "total_orders": total_orders,
-        "total_revenue": total_revenue,
-        "pending_orders": pending_orders,
-        "total_customers": User.objects.filter(is_vendor=False).count()
+        'total_orders': total_orders,
+        'total_products': total_products,
+        'total_users': total_users,
+        'pending_orders': pending_orders,
     })
 
 @api_view(['GET'])
 @permission_classes([IsVendorOrAdmin])
 def admin_orders(request):
-    orders = Order.objects.all().order_by('-created_at')
+    orders = Order.objects.all()
     serializer = OrderSerializer(orders, many=True)
     return Response(serializer.data)

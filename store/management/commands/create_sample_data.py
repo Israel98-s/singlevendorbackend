@@ -1,8 +1,7 @@
 from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
-from store.models import Category, Product, Cart, CartItem, Wishlist, Review, Order, OrderItem, Shipping
+from store.models import Category, Product, Cart, CartItem, Wishlist, Review, Order, OrderItem, Shipping, StoreSettings
 from django.db import transaction
-import uuid
 
 User = get_user_model()
 
@@ -23,6 +22,7 @@ class Command(BaseCommand):
                 last_name='User',
                 is_vendor=True
             )
+            StoreSettings.objects.create(user=admin, store_name='Admin Store')
             self.stdout.write("Superuser created: admin@ecommerce.com / admin123")
         else:
             admin = User.objects.get(email='admin@ecommerce.com')
@@ -37,6 +37,7 @@ class Command(BaseCommand):
                 last_name='User'
             )
             Cart.objects.create(user=user)
+            StoreSettings.objects.create(user=user, store_name='Test User Store')
             self.stdout.write("Test user created: testuser@example.com / password123")
         else:
             user = User.objects.get(email='testuser@example.com')
@@ -47,13 +48,12 @@ class Command(BaseCommand):
             {'name': 'Clothing', 'description': 'Fashion and apparel'},
             {'name': 'Books', 'description': 'Books and literature'},
         ]
-        
         for cat_data in categories:
             Category.objects.get_or_create(
                 name=cat_data['name'],
                 defaults={'description': cat_data['description']}
             )
-        
+
         electronics = Category.objects.get(name='Electronics')
         clothing = Category.objects.get(name='Clothing')
         books = Category.objects.get(name='Books')
@@ -82,7 +82,6 @@ class Command(BaseCommand):
                 'category': books,
             },
         ]
-
         for prod_data in products:
             Product.objects.get_or_create(
                 name=prod_data['name'],
@@ -113,7 +112,6 @@ class Command(BaseCommand):
             shipping_address='123 Test Street, Test City',
             status='pending'
         )
-
         OrderItem.objects.create(
             order=order,
             product=smartphone,

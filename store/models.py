@@ -6,7 +6,6 @@ class User(AbstractUser):
     email = models.EmailField(unique=True)
     is_vendor = models.BooleanField(default=False)
     reset_token = models.CharField(max_length=100, blank=True, null=True)
-
     groups = models.ManyToManyField(
         'auth.Group',
         related_name='store_user_groups',
@@ -25,6 +24,15 @@ class User(AbstractUser):
     def __str__(self):
         return self.username
 
+class StoreSettings(models.Model):
+    user = models.OneToOneField('store.User', on_delete=models.CASCADE, related_name='store_settings')
+    store_name = models.CharField(max_length=100, default='My Store')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.store_name} (for {self.user.username})"
+
 class Category(models.Model):
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
@@ -39,11 +47,11 @@ class Product(models.Model):
     description = models.TextField()
     price = models.DecimalField(max_digits=10, decimal_places=2)
     stock = models.PositiveIntegerField()
-    category = models.ForeignKey(Category, on_delete=models.CASCADE)
     image = models.ImageField(upload_to='products/', blank=True, null=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    category = models.ForeignKey(Category, on_delete=models.CASCADE)
 
     def __str__(self):
         return self.name
@@ -54,7 +62,7 @@ class Cart(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"Cart for {self.user.username}"
+        return f"Cart of {self.user.username}"
 
 class CartItem(models.Model):
     cart = models.ForeignKey(Cart, related_name='items', on_delete=models.CASCADE)
@@ -62,27 +70,25 @@ class CartItem(models.Model):
     quantity = models.PositiveIntegerField(default=1)
 
     def __str__(self):
-        return f"{self.quantity} x {self.product.name}"
+        return f"{self.quantity} x {self.product.name} in cart"
 
 class Order(models.Model):
-    STATUS_CHOICES = (
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey('store.User', on_delete=models.CASCADE)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=20, choices=[
         ('pending', 'Pending'),
         ('confirmed', 'Confirmed'),
         ('shipped', 'Shipped'),
         ('delivered', 'Delivered'),
         ('cancelled', 'Cancelled'),
-    )
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey('store.User', on_delete=models.CASCADE)
-    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    ], default='pending')
     shipping_address = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"Order {str(self.id)[:8]} by {self.user.username}"
+        return f"Order {self.id} by {self.user.username}"
 
 class OrderItem(models.Model):
     order = models.ForeignKey(Order, related_name='items', on_delete=models.CASCADE)
@@ -91,18 +97,18 @@ class OrderItem(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
 
     def __str__(self):
-        return f"{self.quantity} x {self.product.name} in Order {str(self.order.id)[:8]}"
+        return f"{self.quantity} x {self.product.name} in order {self.order.id}"
 
 class Payment(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE)
-    method = models.CharField(max_length=50, choices=(('stripe', 'Stripe'), ('paystack', 'Paystack')))
+    method = models.CharField(max_length=50, choices=[('stripe', 'Stripe'), ('paystack', 'Paystack')])
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, default='pending')
     reference = models.CharField(max_length=100, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Payment {self.reference} for Order {str(self.order.id)[:8]}"
+        return f"Payment {self.reference} for order {self.order.id}"
 
 class Wishlist(models.Model):
     user = models.ForeignKey('store.User', on_delete=models.CASCADE)
@@ -113,7 +119,7 @@ class Wishlist(models.Model):
         unique_together = ('user', 'product')
 
     def __str__(self):
-        return f"{self.user.username} wishes for {self.product.name}"
+        return f"{self.product.name} in {self.user.username}'s wishlist"
 
 class Review(models.Model):
     user = models.ForeignKey('store.User', on_delete=models.CASCADE)
@@ -126,7 +132,7 @@ class Review(models.Model):
         unique_together = ('user', 'product')
 
     def __str__(self):
-        return f"{self.user.username}'s review for {self.product.name}"
+        return f"Review of {self.product.name} by {self.user.username}"
 
 class Shipping(models.Model):
     order = models.OneToOneField(Order, on_delete=models.CASCADE)
@@ -137,4 +143,4 @@ class Shipping(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"Shipping for Order {str(self.order.id)[:8]}"
+        return f"Shipping for order {self.order.id}"
